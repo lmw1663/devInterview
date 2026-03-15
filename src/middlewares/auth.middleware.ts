@@ -14,7 +14,12 @@ export const authMiddleware = (
             error : "Token required"
         })
     }
-    const token = authHeader.split(" ")[1];
+    const token = authHeader.startsWith("Bearer ")? authHeader.split(" ")[1] : null;
+    if(!token){
+        return res.status(401).json({
+            error: "Invalid token"
+        })
+    }
 
     try {
         const decoded = verifyToken(token);

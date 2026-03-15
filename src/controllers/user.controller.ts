@@ -44,3 +44,11 @@ export const loginUser = async (req: Request, res: Response) => {
 
     }
 };
+
+export const getProfile = async (req: Request, res: Response) => {
+    
+    const userId = (req as any).user.userId;
+
+    const user = await findUserByEmail(userId);
+    res.json(user);
+};

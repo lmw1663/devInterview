@@ -1,9 +1,8 @@
 import express from 'express';
 import cors from 'cors';
-import dotenv from 'dotenv';
+import "./config/env";
 import userRoutes from './routes/user.routes';
 
-dotenv.config()
 
 const app = express();
 app.use(cors());
@@ -15,8 +14,8 @@ app.get('/', (req, res) => {
     res.send('DevInterview API Running');
 });
 
-const PORT = process.env.PORT || 3000;
+// const PORT = process.env.PORT || 3000;
 
-app.listen(PORT, () => {
-    console.log('Server running on port ${PORT}');
+app.listen(3000, () => {
+    console.log('Server running');
 })
