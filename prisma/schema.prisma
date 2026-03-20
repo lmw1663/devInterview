@@ -11,13 +11,22 @@ model User {
   email     String   @unique
   password  String
   createdAt DateTime @default(now())
-  answers   Answer[]
+
+  interviews InterviewSession[]
+}
+
+model InterviewSession{
+  id String @id @default(uuid())
+  userId String
+  createdAt DateTime @default(now())
+
+  user User @relation(fields: [userId], references: [id])
+  answers Answer[]
 }
 
 model Question {
   id         String   @id @default(uuid())
   category   String
-  difficulty String
   content    String
   createdAt  DateTime @default(now())
   answers    Answer[]
@@ -25,11 +34,15 @@ model Question {
 
 model Answer {
   id         String   @id @default(uuid())
-  answerText String
-  scoreTotal Int?
-  createdAt  DateTime @default(now())
-  userId     String
+  interViewId String
   questionId String
-  question   Question @relation(fields: [questionId], references: [id])
-  user       User     @relation(fields: [userId], references: [id])
+  content String
+  aiScore Int?
+  aiFeedback String?
+
+
+  createdAt  DateTime @default(now())
+
+  interview InterviewSession @relation(fields: [interViewId],references: [id])
+  question Question @relation(fields: [questionId], references: [id])
 }
