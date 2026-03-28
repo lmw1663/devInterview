@@ -2,6 +2,7 @@ import {Request, Response} from "express";
 import {
     createUser,
     findUserByEmail,
+    findUserById,
     validatePassword
 } from "../services/user.service";
 import {generateToken} from "../utils/jwt";
@@ -47,8 +48,19 @@ export const loginUser = async (req: Request, res: Response) => {
 
 export const getProfile = async (req: Request, res: Response) => {
     
-    const userId = (req as any).user.userId;
+    try {
+        const userId = (req as {user?: {userId: string}}).user?.userId;
+        if(!userId){
+            return res.status(401).json({error : "Unauthorized"});
+        }
+        const user = await findUserById(userId);
+        if(!user){
+            return res.status(404).json({error: "User not found"});
+        }
 
-    const user = await findUserByEmail(userId);
-    res.json(user);
+        const {password, ...safe} = user;
+        res.json(safe);
+    }catch (error){
+        res.status(500).json({message: "Failed to load profile"});
+    }
 };

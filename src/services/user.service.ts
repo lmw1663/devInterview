@@ -29,3 +29,9 @@ export  const validatePassword = async (
 ) => {
     return comparePassword(password,hashed);
 };
+
+export const findUserById = async (id: string) => {
+    return prisma.user.findUnique({
+        where: {id}
+    });
+};

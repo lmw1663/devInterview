@@ -34,7 +34,7 @@ model Question {
 
 model Answer {
   id         String   @id @default(uuid())
-  interViewId String
+  interviewId String
   questionId String
   content String
   aiScore Int?
@@ -43,6 +43,6 @@ model Answer {
 
   createdAt  DateTime @default(now())
 
-  interview InterviewSession @relation(fields: [interViewId],references: [id])
+  interview InterviewSession @relation(fields: [interviewId],references: [id])
   question Question @relation(fields: [questionId], references: [id])
 }
