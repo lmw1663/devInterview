@@ -18,10 +18,27 @@ model User {
 model InterviewSession{
   id String @id @default(uuid())
   userId String
+  category String
+  questionCount Int
   createdAt DateTime @default(now())
 
+
   user User @relation(fields: [userId], references: [id])
-  answers Answer[]
+  interviewQuestions InterviewQuestion[]
+}
+model InterviewQuestion {
+  id String @id @default(uuid())
+  interviewId String
+  questionId String
+  order Int
+  
+  interview InterviewSession @relation(fields: [interviewId], references: [id])
+  question Question @relation(fields: [questionId],references: [id])
+
+  answer Answer?
+
+  @@unique([interviewId,order])
+  @@unique([interviewId,questionId])
 }
 
 model Question {
@@ -29,20 +46,23 @@ model Question {
   category   String
   content    String
   createdAt  DateTime @default(now())
-  answers    Answer[]
+  
+  interviewQuestions InterviewQuestion[]
 }
 
 model Answer {
   id         String   @id @default(uuid())
-  interviewId String
-  questionId String
+  interviewQuestionId String @unique 
+
   content String
+  audioURI String?
+  duration Int?
   aiScore Int?
   aiFeedback String?
 
 
   createdAt  DateTime @default(now())
 
-  interview InterviewSession @relation(fields: [interviewId],references: [id])
-  question Question @relation(fields: [questionId], references: [id])
+  interviewQuestion InterviewQuestion @relation(fields: [interviewQuestionId], references: [id])
 }
+
