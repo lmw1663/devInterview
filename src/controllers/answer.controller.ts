@@ -1,36 +1,8 @@
 import prisma from "../lib/prisma";
 import { Request, Response } from "express";
-import { evaluateAnswer, evaluateAnswersBatch } from "../services/ai.service";
+import { aiQueue } from "../queues/ai.queue";
 
 type SubmitItem = { interviewQuestionId?: string; content?: string };
-
-async function createAnswerForSlot(interviewQuestionId: string, content: string) {
-  const slot = await prisma.interviewQuestion.findUnique({
-    where: { id: interviewQuestionId },
-    include: { question: true },
-  });
-
-  if (!slot?.question) {
-    throw new Error("InterviewQuestion not found");
-  }
-
-  const aiResult = await evaluateAnswer(slot.question.content || "", content);
-
-  return prisma.answer.upsert({
-    where: { interviewQuestionId },
-    create: {
-      interviewQuestionId,
-      content,
-      aiScore: aiResult.score,
-      aiFeedback: aiResult.feedback,
-    },
-    update: {
-      content,
-      aiScore: aiResult.score,
-      aiFeedback: aiResult.feedback,
-    },
-  });
-}
 
 export const submitAnswer = async (req: Request, res: Response) => {
   try {
@@ -39,26 +11,28 @@ export const submitAnswer = async (req: Request, res: Response) => {
       return res.status(400).json({ error: "interviewQuestionId and content are required" });
     }
 
-    const answer = await createAnswerForSlot(interviewQuestionId, content);
-    res.json(answer);
+    const slot = await prisma.interviewQuestion.findUnique({
+      where: { id: interviewQuestionId },
+      include: { question: true },
+    });
+
+    if (!slot?.question) {
+      return res.status(404).json({ error: "InterviewQuestion not found" });
+    }
+
+    const job = await aiQueue.add("evaluate", {
+      interviewQuestionId,
+      questionContent: slot.question.content || "",
+      answerContent: content,
+    });
+
+    res.status(202).json({ jobId: job.id, status: "queued" });
   } catch (e) {
     const message = e instanceof Error ? e.message : "Failed to submit answer";
     res.status(500).json({ error: message });
   }
 };
 
-type Row =
-  | {
-      interviewQuestionId: string;
-      ok: true;
-      answer: Awaited<ReturnType<typeof createAnswerForSlot>>;
-    }
-  | { interviewQuestionId: string; ok: false; error: string };
-
-/**
- * 여러 슬롯 답변을 한 HTTP 요청으로 제출.
- * DB 슬롯 조회 1회 + OpenAI 호출 1회 + Answer 생성은 항목별.
- */
 export const submitAnswersBatch = async (req: Request, res: Response) => {
   const { items } = req.body as { items?: SubmitItem[] };
 
@@ -68,129 +42,94 @@ export const submitAnswersBatch = async (req: Request, res: Response) => {
     });
   }
 
-  const results: Row[] = [];
-  type ValidRow = { id: string; content: string };
-  const validRows: ValidRow[] = [];
+  const results: { interviewQuestionId: string; ok: boolean; jobId?: string; error?: string }[] = [];
 
-  for (const item of items) {
-    const id = item.interviewQuestionId;
-    const content = item.content;
+  const validItems = items.filter(
+    (item): item is { interviewQuestionId: string; content: string } =>
+      !!item.interviewQuestionId && typeof item.content === "string"
+  );
 
-    if (!id || typeof content !== "string") {
-      results.push({
-        interviewQuestionId: id ?? "",
-        ok: false,
-        error: "interviewQuestionId and content are required per item",
-      });
-      continue;
-    }
-    validRows.push({ id, content });
+  const invalidItems = items.filter(
+    (item) => !item.interviewQuestionId || typeof item.content !== "string"
+  );
+
+  for (const item of invalidItems) {
+    results.push({
+      interviewQuestionId: item.interviewQuestionId ?? "",
+      ok: false,
+      error: "interviewQuestionId and content are required per item",
+    });
   }
 
-  if (validRows.length === 0) {
-    const failed = results.filter((r) => !r.ok).length;
-    const status = failed === results.length ? 500 : 207;
-    return res.status(status).json({ results });
+  if (validItems.length === 0) {
+    return res.status(400).json({ results });
   }
 
-  const ids = [...new Set(validRows.map((r) => r.id))];
+  const ids = [...new Set(validItems.map((r) => r.interviewQuestionId))];
   const slots = await prisma.interviewQuestion.findMany({
     where: { id: { in: ids } },
     include: { question: true },
   });
   const slotById = new Map(slots.map((s) => [s.id, s]));
 
-  const batchForAi: { interviewQuestionId: string; question: string; answer: string; content: string }[] =
-    [];
-
-  for (const row of validRows) {
-    const slot = slotById.get(row.id);
+  for (const item of validItems) {
+    const slot = slotById.get(item.interviewQuestionId);
     if (!slot?.question) {
       results.push({
-        interviewQuestionId: row.id,
+        interviewQuestionId: item.interviewQuestionId,
         ok: false,
         error: "InterviewQuestion not found",
       });
       continue;
     }
-    batchForAi.push({
-      interviewQuestionId: row.id,
-      question: slot.question.content || "",
-      answer: row.content,
-      content: row.content,
-    });
-  }
-
-  if (batchForAi.length === 0) {
-    const failed = results.filter((r) => !r.ok).length;
-    const status = failed === results.length ? 500 : 207;
-    return res.status(status).json({ results });
-  }
-
-  let evaluations: Awaited<ReturnType<typeof evaluateAnswersBatch>>;
-  try {
-    evaluations = await evaluateAnswersBatch(
-      batchForAi.map((b) => ({
-        interviewQuestionId: b.interviewQuestionId,
-        question: b.question,
-        answer: b.answer,
-      }))
-    );
-  } catch (e) {
-    const message = e instanceof Error ? e.message : "AI batch evaluation failed";
-    for (const b of batchForAi) {
-      results.push({
-        interviewQuestionId: b.interviewQuestionId,
-        ok: false,
-        error: message,
-      });
-    }
-    const failed = results.filter((r) => !r.ok).length;
-    const status = failed === results.length ? 500 : 207;
-    return res.status(status).json({ results });
-  }
-
-  const evalById = new Map(evaluations.map((e) => [e.interviewQuestionId, e]));
-
-  for (const b of batchForAi) {
-    const ev = evalById.get(b.interviewQuestionId);
-    if (!ev) {
-      results.push({
-        interviewQuestionId: b.interviewQuestionId,
-        ok: false,
-        error: "Missing AI result for slot",
-      });
-      continue;
-    }
 
     try {
-      const answer = await prisma.answer.upsert({
-        where: { interviewQuestionId: b.interviewQuestionId },
-        create: {
-          interviewQuestionId: b.interviewQuestionId,
-          content: b.content,
-          aiScore: ev.score,
-          aiFeedback: ev.feedback,
-        },
-        update: {
-          content: b.content,
-          aiScore: ev.score,
-          aiFeedback: ev.feedback,
-        },
+      const job = await aiQueue.add("evaluate", {
+        interviewQuestionId: item.interviewQuestionId,
+        questionContent: slot.question.content || "",
+        answerContent: item.content,
       });
-      results.push({ interviewQuestionId: b.interviewQuestionId, ok: true, answer });
+      results.push({ interviewQuestionId: item.interviewQuestionId, ok: true, jobId: job.id });
     } catch (e) {
-      const message = e instanceof Error ? e.message : String(e);
       results.push({
-        interviewQuestionId: b.interviewQuestionId,
+        interviewQuestionId: item.interviewQuestionId,
         ok: false,
-        error: message,
+        error: e instanceof Error ? e.message : String(e),
       });
     }
   }
 
   const failed = results.filter((r) => !r.ok).length;
-  const status = failed === results.length ? 500 : failed > 0 ? 207 : 200;
-
+  const status = failed === results.length ? 500 : failed > 0 ? 207 : 202;
   res.status(status).json({ results });
+};
+
+export const getAnswerStatus = async (req: Request, res: Response) => {
+  try {
+    const jobId = req.params.jobId as string;
+    const job = await aiQueue.getJob(jobId);
+
+    if (!job) {
+      return res.status(404).json({ error: "Job not found" });
+    }
+
+    const state = await job.getState();
+    const returnValue = job.returnvalue;
+
+    if (state === "completed" && returnValue?.interviewQuestionId) {
+      const answer = await prisma.answer.findUnique({
+        where: { interviewQuestionId: returnValue.interviewQuestionId },
+      });
+      return res.json({ jobId, status: state, answer });
+    }
+
+    if (state === "failed") {
+      return res.json({ jobId, status: state, error: job.failedReason });
+    }
+
+    res.json({ jobId, status: state });
+  } catch (e) {
+    const message = e instanceof Error ? e.message : "Failed to get job status";
+    res.status(500).json({ error: message });
+  }
 };
